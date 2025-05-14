@@ -1,0 +1,54 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import optimizers
+import matplotlib.pyplot as plt
+import os
+# Plotting
+    for country_idx, country in enumerate(countries):
+        plt.figure(figsize=(12, 4))
+        for lineage_idx, lineage in enumerate(lineages):
+            plt.plot(days, predictions[lineage_idx, country_idx, :], label=f"{lineage} (Model)")
+            plt.plot(days, proportions_tensor[lineage_idx, country_idx, :], label=f"{lineage} (Original)", linestyle='--')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.title(f"Country: {country}")
+        plt.xlabel("Days")
+        plt.ylabel("Proportions")
+        plt.tight_layout()
+        plot_path = os.path.join(plots_dir, f"{base_name}_{country}.pdf")
+        plt.savefig(plot_path)
+        plt.close()
+
+    # Save predictions and proportions
+    predictions_data = []
+    proportions_data = []
+    for lineage_idx, lineage in enumerate(lineages):
+        predictions_data.append(predictions[lineage_idx, 0, :])
+        proportions_data.append(proportions_tensor[lineage_idx, 0, :])
+
+    predictions_df = pd.DataFrame(predictions_data, columns=[f"Day_{i}" for i in range(len(dates))], index=lineages)
+    proportions_df = pd.DataFrame(proportions_data, columns=[f"Day_{i}" for i in range(len(dates))], index=lineages)
+
+    predictions_csv_path = os.path.join(model_fits_dir, f"{base_name}_predictions1.csv")
+    proportions_csv_path = os.path.join(model_fits_dir, f"{base_name}_proportions1.csv")
+    predictions_df.to_csv(predictions_csv_path)
+    proportions_df.to_csv(proportions_csv_path)
+
+    # 📌 Compute effective R_t per lineage, per date, per country
+    print(f"Computing R_t for {file}...")
+    log_preds = np.log(predictions + 1e-8)
+    d_log_preds = np.diff(log_preds, axis=2)  # (lineages, countries, days-1)
+    nan_pad = np.full((d_log_preds.shape[0], d_log_preds.shape[1], 1), np.nan)
+    R_t = np.concatenate([d_log_preds, nan_pad], axis=2)  # (lineages, countries, days)
+
+    for country_idx, country in enumerate(countries):
+        country_r_values = R_t[:, country_idx, :]
+        r_df = pd.DataFrame(
+            country_r_values,
+            index=lineages,
+            columns=[d.strftime('%Y-%m-%d') for d in dates]
+        )
+        r_csv_path = os.path.join(model_fits_dir, f"{base_name}_{country}_Rt.csv")
+        r_df.to_csv(r_csv_path)
+
+    print(f"Finished processing {file}. Results saved.\n")
