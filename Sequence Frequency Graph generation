@@ -1,0 +1,158 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import os
+from datetime import datetime
+
+# --- Configuration ---
+file_mapping = {
+    'Hong Kong': 'hong_kong.csv',
+    'India': 'india.csv',
+    'Singapore': 'singapore.csv',
+    'USA': 'usa.csv',
+    'United Kingdom': 'united_kingdom.csv',
+    'Japan': 'japan.csv'
+}
+
+# Use the order you want the plots to appear vertically
+countries_plot_order = ['USA', 'United Kingdom', 'Japan', 'India', 'Singapore', 'Hong Kong']
+# Filter out countries not in file_mapping keys, in case of mismatch
+countries_plot_order = [c for c in countries_plot_order if c in file_mapping]
+
+
+data_dir = '.' # Directory where CSV files are located
+date_format_string = '%Y-%m-%d' # Expected date format in CSVs
+start_date_filter = '2022-01-01' # Filter data starting from this date
+
+# --- Data Loading and Aggregation ---
+all_data_list = []
+print("Processing files...")
+
+for country, filename in file_mapping.items():
+    # Ensure we only process countries intended for the plot if file_mapping has more
+    if country not in countries_plot_order:
+        continue
+
+    filepath = os.path.join(data_dir, filename)
+    print(f"-> Reading {filepath} for {country}")
+    try:
+        df_country = pd.read_csv(filepath, usecols=['date', 'count'], dtype={'date': str, 'count': 'Int64'}, keep_default_na=False) # Read count as Int64 to handle potential NA later if needed
+
+        if df_country.empty:
+             print(f"  WARN: File {filename} is empty. Skipping.")
+             continue
+
+        # --- Date Parsing ---
+        df_country['date'] = df_country['date'].str.strip()
+        df_country['date'] = pd.to_datetime(df_country['date'], format=date_format_string, errors='coerce')
+
+        # --- Count Parsing & NA Handling ---
+        # Convert count column explicitly to numeric, coercing errors to NaN
+        df_country['count'] = pd.to_numeric(df_country['count'], errors='coerce')
+        # Drop rows where date or count failed parsing
+        df_country.dropna(subset=['date', 'count'], inplace=True)
+
+        # Convert count back to integer type after handling NA
+        if not df_country.empty:
+             df_country['count'] = df_country['count'].astype(int)
+
+        print(f"  Rows remaining after parsing date/count and dropping NA: {len(df_country)}")
+
+        if not df_country.empty:
+            # --- Filter by Date ---
+            df_filtered = df_country[df_country['date'] >= pd.to_datetime(start_date_filter)].copy()
+            print(f"  Rows remaining after filtering from {start_date_filter}: {len(df_filtered)}")
+
+            if not df_filtered.empty:
+                # --- Aggregate Daily Counts ---
+                # Group by date within the already filtered country df and sum counts
+                df_agg = df_filtered.groupby('date')['count'].sum().reset_index()
+                df_agg['country'] = country # Add country column back
+                all_data_list.append(df_agg)
+            else:
+                 print(f"  WARN: No data found for {country} after {start_date_filter}.")
+        else:
+             print(f"  WARN: No valid data rows found in {filename} after initial parsing.")
+
+
+    except FileNotFoundError:
+        print(f"  ERROR: File not found: {filepath}. Skipping {country}.")
+    except ValueError as e:
+         if 'Usecols do not match columns' in str(e) or "'date' is not in list" in str(e) or "'count' is not in list" in str(e):
+             print(f"  ERROR: Required column ('date' or 'count') not found in {filepath}.")
+         elif 'does not match format' in str(e):
+              print(f"  ERROR: Date format error in {filepath}. Check if dates match '{date_format_string}'. Error: {e}")
+         else:
+             print(f"  ERROR: A value error occurred reading or parsing {filepath}: {e}")
+    except KeyError as e:
+         print(f"  ERROR: Column key error ('date' or 'count') in {filepath}. Error: {e}. Skipping {country}.")
+    except Exception as e:
+        print(f"  ERROR: An unexpected error occurred while reading {filepath}: {e}. Skipping {country}.")
+
+
+# --- Combine all aggregated data ---
+if not all_data_list:
+    print("\nERROR: No data available to plot after processing and filtering all files.")
+else:
+    agg_data = pd.concat(all_data_list, ignore_index=True)
+    print(f"\nCombined aggregated data has {len(agg_data)} rows.")
+    print(f"Countries in aggregated data: {agg_data['country'].unique()}")
+
+    # --- Plotting with FacetGrid ---
+    print("Generating plots...")
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+    # Calculate dynamic height
+    num_countries = len(countries_plot_order)
+    plot_height_per_country = 1.5 # Adjust this value for desired height per plot
+    total_height = max(4, num_countries * plot_height_per_country)
+    aspect_ratio = 4 # Width relative to height (e.g., 4 means width is 4*height)
+
+    # Ensure the DataFrame used for FacetGrid has the correct column name for y-axis
+    agg_data.rename(columns={'count': 'Total Sequences'}, inplace=True)
+
+    g = sns.FacetGrid(agg_data,
+                      row='country',
+                      row_order=countries_plot_order,
+                      height=plot_height_per_country,
+                      aspect=aspect_ratio,
+                      sharey=False, # Allow independent y-axes
+                      sharex=True,  # Keep x-axis (time) shared
+                      margin_titles=True) # Put country names on the right
+
+    # Map the line plot onto the grid
+    g.map(sns.lineplot, 'date', 'Total Sequences', color='darkslateblue', linewidth=1.0) # Changed color and linewidth
+
+    # Improve axis labels and formatting
+    g.set_axis_labels("Date", "Sequences")
+    g.set_titles(row_template="{row_name}") # Set titles for each row (country)
+
+    # Format the date axis on all subplots
+    for ax in g.axes.flat:
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3)) # Ticks every 3 months
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b\n%Y')) # Format as 'Jan\n2022'
+        ax.tick_params(axis='x', labelsize=9)
+        ax.tick_params(axis='y', labelsize=9)
+        # Add minor ticks for months if desired for grid
+        ax.xaxis.set_minor_locator(mdates.MonthLocator())
+        ax.grid(which='minor', axis='x', linestyle=':', color='lightgrey', linewidth=0.5)
+        ax.grid(which='major', axis='both', linestyle='-', color='darkgrey', linewidth=0.6)
+
+    # Adjust y-axis limits slightly for padding
+    g.set(ylim=(0, None)) # Ensure y-axis starts at 0, automatically scale upper limit
+    for ax in g.axes.flat:
+        # Add a bit of top padding to y-axis
+        current_ylim = ax.get_ylim()
+        ax.set_ylim(0, current_ylim[1] * 1.05) # 5% padding at the top
+
+    # Remove top and right spines for a cleaner look like the example
+    sns.despine(fig=g.fig, trim=False)
+
+    # Adjust layout
+    plt.subplots_adjust(hspace=0.4) # Add more vertical space between plots
+    g.fig.suptitle(f'Daily Sequence Counts by Country (from {start_date_filter})', y=1.02, fontsize=16) # Add overall title
+
+    print("Displaying plot...")
+    plt.show()
