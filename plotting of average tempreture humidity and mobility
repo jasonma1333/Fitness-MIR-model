@@ -1,0 +1,87 @@
+import pandas as pd
+import plotly.express as px
+
+# ---------------------------------------------------------
+# 1. Actual Data Aggregation (Representative Averages)
+#
+# The values below are examples for the period 2022–2025. Adjust as needed.
+# ---------------------------------------------------------
+data = {
+    'Country': ['India', 'Singapore', 'USA', 'UK', 'Hong Kong', 'Japan'],
+    'Temperature': [29, 28, 12, 10, 26, 14],  # in °C (average)
+    'Humidity': [70, 84, 60, 75, 80, 65],      # in % (average)
+    'Mobility': [65, 70, 68, 66, 72, 67]        # Mobility index (representative)
+}
+df = pd.DataFrame(data)
+
+# ---------------------------------------------------------
+# 2. Map Country Names to ISO Alpha Codes
+# ---------------------------------------------------------
+iso_codes = {
+    'India': 'IND',
+    'Singapore': 'SGP',
+    'USA': 'USA',
+    'UK': 'GBR',
+    'Hong Kong': 'HKG',
+    'Japan': 'JPN'
+}
+df['iso_alpha'] = df['Country'].map(iso_codes)
+
+# Verify that all iso codes are present
+if df['iso_alpha'].isnull().any():
+    print("Warning: Some countries do not have corresponding ISO codes.")
+
+# ---------------------------------------------------------
+# 3. Generate Static Maps for Each Metric with Increased Geo Resolution
+# ---------------------------------------------------------
+
+# -- Temperature Map --
+fig_temp = px.scatter_geo(
+    df,
+    locations="iso_alpha",
+    color="Temperature",
+    size="Temperature",
+    hover_name="Country",
+    projection="natural earth",
+    title="Average Temperature "
+)
+fig_temp.update_layout(
+    geo=dict(resolution=50),
+    legend_title_text='Temperature (°C)',
+    margin={"r":0, "t":50, "l":0, "b":0}
+)
+fig_temp.show()
+
+# -- Humidity Map --
+fig_humidity = px.scatter_geo(
+    df,
+    locations="iso_alpha",
+    color="Humidity",
+    size="Humidity",
+    hover_name="Country",
+    projection="natural earth",
+    title="Average Humidity"
+)
+fig_humidity.update_layout(
+    geo=dict(resolution=50),
+    legend_title_text='Humidity (%)',
+    margin={"r":0, "t":50, "l":0, "b":0}
+)
+fig_humidity.show()
+
+# -- Mobility Map --
+fig_mobility = px.scatter_geo(
+    df,
+    locations="iso_alpha",
+    color="Mobility",
+    size="Mobility",
+    hover_name="Country",
+    projection="natural earth",
+    title="Average Mobility Index"
+)
+fig_mobility.update_layout(
+    geo=dict(resolution=50),
+    legend_title_text='Mobility Index',
+    margin={"r":0, "t":50, "l":0, "b":0}
+)
+fig_mobility.show()
