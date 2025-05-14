@@ -1,0 +1,152 @@
+import os
+import glob
+import pandas as pd
+import numpy as np
+import requests
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+# -----------------------------
+# CONFIGURATION
+# -----------------------------
+MODEL_FITS_DIR = "/Users/jasonma/Desktop/model_fits_updated"
+OUTPUT_DIR = "/Users/jasonma/Desktop/analysis_output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# List of countries, coordinates (for weather), and mobility region names
+COUNTRIES = {
+    "india": {"lat": 28.6139, "lon": 77.2090, "mobility_region": "India"},
+    "usa": {"lat": 38.9072, "lon": -77.0369, "mobility_region": "United States"},
+    "united_kingdom": {"lat": 51.5072, "lon": -0.1276, "mobility_region": "United Kingdom"},
+    "hong_kong": {"lat": 22.3193, "lon": 114.1694, "mobility_region": "Hong Kong"},
+    "singapore": {"lat": 1.3521, "lon": 103.8198, "mobility_region": "Singapore"},
+    "japan": {"lat": 35.6762, "lon": 139.6503, "mobility_region": "Japan"}
+}
+
+# -----------------------------
+# WEATHER API: Open-Meteo
+# -----------------------------
+def get_weather_data(lat, lon, start_date, end_date):
+    url = "https://archive-api.open-meteo.com/v1/archive"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily": ["temperature_2m_max", "temperature_2m_min", "relative_humidity_2m_mean", "wind_speed_10m_max"],
+        "timezone": "auto"
+    }
+    response = requests.get(url, params=params)
+    data = response.json()
+    df = pd.DataFrame(data['daily'])
+    df['date'] = pd.to_datetime(df['time'])
+    return df.drop(columns=['time'])
+
+# -----------------------------
+# MOBILITY DATA
+# -----------------------------
+def load_mobility_data(mobility_file="https://www.gstatic.com/covid19/mobility/Global_Mobility_Report.csv"):
+    print("Downloading mobility data...")
+    df = pd.read_csv(mobility_file, parse_dates=['date'], low_memory=False)
+    df = df[df['sub_region_1'].isna()]  # National level only
+    return df
+
+mobility_df = load_mobility_data()
+
+# -----------------------------
+# MAIN ANALYSIS LOOP PER COUNTRY
+# -----------------------------
+for country_key, info in COUNTRIES.items():
+    print(f"Processing: {country_key}")
+    rt_file = os.path.join(MODEL_FITS_DIR, f"{country_key}_Rt.csv")
+    if not os.path.exists(rt_file):
+        print(f"R_t file not found: {rt_file}")
+        continue
+
+    # Load R_t data
+    rt_df = pd.read_csv(rt_file, index_col=0)
+    rt_df = rt_df.T
+    rt_df.index = pd.to_datetime(rt_df.index)
+
+    # Determine date range from R_t data
+    start_date = rt_df.index.min().strftime("%Y-%m-%d")
+    end_date = rt_df.index.max().strftime("%Y-%m-%d")
+
+    # Fetch weather data
+    weather_df = get_weather_data(info['lat'], info['lon'], start_date, end_date)
+
+    # Fetch mobility data for the country
+    country_mobility = mobility_df[mobility_df['country_region'] == info['mobility_region']]
+    country_mobility = country_mobility[['date', 'retail_and_recreation_percent_change_from_baseline',
+                                          'grocery_and_pharmacy_percent_change_from_baseline',
+                                          'transit_stations_percent_change_from_baseline',
+                                          'workplaces_percent_change_from_baseline']]
+    country_mobility = country_mobility.dropna()
+    country_mobility['date'] = pd.to_datetime(country_mobility['date'])
+
+    # Merge weather, R_t, and mobility data using date as key
+    merged_df = weather_df.merge(rt_df, left_on='date', right_index=True)
+    merged_df = merged_df.merge(country_mobility, on='date', how='left')
+
+    # Save the merged data per country
+    merged_output_file = os.path.join(OUTPUT_DIR, f"{country_key}_merged.csv")
+    merged_df.to_csv(merged_output_file, index=False)
+    print(f"Saved merged data for {country_key} to {merged_output_file}")
+
+    # -----------------------------
+    # Polynomial Regression per Lineage - Aggregate results per country
+    # -----------------------------
+    regression_results = []  # List to store regression result dictionaries
+
+    for lineage in rt_df.columns:
+        # Select relevant columns for this lineage, and drop rows with missing data
+        lineage_df = merged_df[['date', lineage,
+                                'temperature_2m_max', 'relative_humidity_2m_mean',
+                                'retail_and_recreation_percent_change_from_baseline',
+                                'workplaces_percent_change_from_baseline']].dropna()
+
+        if lineage_df.empty:
+            continue
+
+        # Define features and target
+        X = lineage_df[['temperature_2m_max', 'relative_humidity_2m_mean',
+                        'retail_and_recreation_percent_change_from_baseline',
+                        'workplaces_percent_change_from_baseline']]
+        y = lineage_df[lineage]
+
+        # Configure polynomial regression (degree can be changed)
+        degree = 2  # Quadratic polynomial regression
+        poly = PolynomialFeatures(degree=degree, include_bias=False)
+        X_poly = poly.fit_transform(X)
+
+        # Fit the regression model
+        model = LinearRegression()
+        model.fit(X_poly, y)
+        r2 = model.score(X_poly, y)
+
+        # Get polynomial feature names for clarity
+        feature_names = poly.get_feature_names_out(X.columns)
+
+        # Build a dictionary for the current lineage's regression results
+        result = {
+            'country': country_key,
+            'lineage': lineage,
+            'degree': degree,
+            'intercept': model.intercept_,
+            'r2_score': r2
+        }
+        for name, coef in zip(feature_names, model.coef_):
+            result[f'coef_{name}'] = coef
+
+        regression_results.append(result)
+
+    # Save all regression results for this country into one CSV file.
+    if regression_results:
+        regression_df = pd.DataFrame(regression_results)
+        regression_output_file = os.path.join(OUTPUT_DIR, f"{country_key}_poly_regression_results.csv")
+        regression_df.to_csv(regression_output_file, index=False)
+        print(f"Saved polynomial regression results for {country_key} to {regression_output_file}")
+    else:
+        print(f"No regression results to save for {country_key}.")
