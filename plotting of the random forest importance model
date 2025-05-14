@@ -1,0 +1,19 @@
+from sklearn.ensemble import RandomForestRegressor
+
+# Train a random forest regressor on the same features
+rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+rf_model.fit(X, y)
+importances = rf_model.feature_importances_
+
+# Get the feature names (the original ones used in X)
+feature_names = X.columns
+
+# Plotting feature importances as a horizontal bar plot
+plt.figure(figsize=(8, 5))
+y_pos = np.arange(len(feature_names))
+plt.barh(y_pos, importances, align='center', color='skyblue')
+plt.yticks(y_pos, feature_names)
+plt.xlabel('Feature Importance')
+plt.title('Random Forest Feature Importances')
+plt.tight_layout()
+plt.show()
