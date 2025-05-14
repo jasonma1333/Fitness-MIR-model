@@ -1,0 +1,255 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.colors as mcolors
+import os
+from datetime import datetime
+
+# --- Configuration ---
+file_mapping = {
+    'Hong Kong': 'hong_kong.csv',
+    'India': 'india.csv',
+    'Singapore': 'singapore.csv',
+    'USA': 'usa.csv',
+    'United Kingdom': 'united_kingdom.csv',
+    'Japan': 'japan.csv'
+}
+
+countries = list(file_mapping.keys())
+data_dir = '.' # Directory where CSV files are located
+date_format_string = '%Y-%m-%d' # Explicitly define the expected format
+start_date_filter = '2022-01-01' # Define the desired start date
+
+# --- Data Loading and Processing ---
+all_dates = set()
+country_dates = {}
+min_date = None
+max_date = None
+
+print("Processing files...")
+for country, filename in file_mapping.items():
+    filepath = os.path.join(data_dir, filename)
+    print(f"-> Reading {filepath} for {country}")
+    try:
+        # Read only the date column initially for efficiency
+        df_dates = pd.read_csv(filepath, usecols=['date'], dtype={'date': str}, keep_default_na=False)
+        print(f"  Initial rows read: {len(df_dates)}")
+
+        df_dates['date'] = df_dates['date'].str.strip()
+        df_dates['date'] = pd.to_datetime(df_dates['date'], format=date_format_string, errors='coerce')
+
+        nat_count = df_dates['date'].isna().sum()
+        if nat_count > 0:
+             print(f"  WARN: Rows with NaT dates after parsing (format '{date_format_string}'): {nat_count}")
+
+        df_dates.dropna(subset=['date'], inplace=True)
+        print(f"  Rows remaining after dropping NaT: {len(df_dates)}")
+
+
+        if df_dates.empty:
+             print(f"  WARN: File {filename} is empty or contains no dates in the expected format '{date_format_string}'.")
+             country_dates[country] = set()
+        else:
+             unique_dates = df_dates['date'].unique() # Returns numpy array
+             unique_dates_dt = pd.to_datetime(unique_dates)
+
+             if len(unique_dates_dt) > 0:
+                 current_min = unique_dates_dt.min()
+                 current_max = unique_dates_dt.max()
+                 print(f"  Found valid dates from {current_min.strftime('%Y-%m-%d')} to {current_max.strftime('%Y-%m-%d')}")
+
+                 if min_date is None or current_min < min_date:
+                     min_date = current_min
+                 if max_date is None or current_max > max_date:
+                     max_date = current_max
+
+                 country_dates[country] = set(unique_dates_dt)
+                 all_dates.update(unique_dates_dt)
+             else:
+                print(f"  WARN: Logic error - df_dates not empty, but no unique dates found in {filename}.")
+                country_dates[country] = set()
+
+    except FileNotFoundError:
+        print(f"  ERROR: File not found: {filepath}. Skipping {country}.")
+        country_dates[country] = set()
+    except ValueError as e:
+         if 'Usecols do not match columns' in str(e) or "'date' is not in list" in str(e):
+             print(f"  ERROR: Column 'date' not found in {filepath}.")
+         elif 'does not match format' in str(e):
+              print(f"  ERROR: Date format error in {filepath}. Check if dates match '{date_format_string}'. Error: {e}")
+         else:
+             print(f"  ERROR: A value error occurred reading or parsing {filepath}: {e}")
+         country_dates[country] = set()
+    except KeyError as e:
+         print(f"  ERROR: Column 'date' key error in {filepath}. Error: {e}. Skipping {country}.")
+         country_dates[country] = set()
+    except Exception as e:
+        print(f"  ERROR: An unexpected error occurred while reading {filepath}: {e}. Skipping {country}.")
+        country_dates[country] = set()
+
+
+# --- Create Heatmap Data ---
+if min_date is None or max_date is None:
+    print("\nERROR: Could not determine date range. No valid data found in any file.")
+else:
+    print(f"\nOriginal overall date range: {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}")
+
+    # Create the full date range based on loaded data
+    full_date_range = pd.date_range(start=min_date, end=max_date, freq='D')
+
+    # Build the daily heatmap for the full range first
+    daily_heatmap_data = pd.DataFrame(index=countries, columns=full_date_range, dtype=int)
+    print("Building daily heatmap matrix for full range...")
+    for country in countries:
+        if country in country_dates:
+            dates_present = country_dates.get(country, set())
+            daily_heatmap_data.loc[country] = full_date_range.isin(dates_present).astype(int)
+        else:
+             daily_heatmap_data.loc[country] = 0
+
+    # Resample to weekly
+    print("Resampling data to weekly presence for full range...")
+    weekly_heatmap_data_full = daily_heatmap_data.T.resample('W-MON').max().T
+
+    # --- FILTERING BY DATE ---
+    print(f"Filtering weekly data to start from {start_date_filter}...")
+    filter_dt = pd.to_datetime(start_date_filter)
+    # Select columns (weeks) where the column name (Timestamp) is >= filter_dt
+    weekly_heatmap_data_filtered = weekly_heatmap_data_full.loc[:, weekly_heatmap_data_full.columns >= filter_dt]
+
+    if weekly_heatmap_data_filtered.empty or weekly_heatmap_data_filtered.shape[1] == 0:
+        print("\nERROR: No weekly data remains after filtering. Check start_date_filter or data range.")
+    else:
+        print(f"Filtered data range: {weekly_heatmap_data_filtered.columns.min().strftime('%Y-%m-%d')} to {weekly_heatmap_data_filtered.columns.max().strftime('%Y-%m-%d')}")
+        print(f"Filtered to {weekly_heatmap_data_filtered.shape[1]} weeks.")
+
+        # --- Plotting Filtered Weekly Data ---
+        print("Generating filtered weekly heatmap...")
+        plt.style.use('seaborn-v0_8-whitegrid')
+
+        cmap = mcolors.ListedColormap(['#d9534f', '#f0f0f0']) # Red for 0 (missing), Light Grey for 1 (present)
+
+        fig_height = max(6, len(countries) * 0.8)
+        fig_width = 20 # Adjust as needed for the filtered range
+
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+        # --- Inspect Columns Before Plotting ---
+        print("\nInspecting weekly_heatmap_data_filtered columns:")
+        print("Columns:", weekly_heatmap_data_filtered.columns)
+        print("Column dtype:", weekly_heatmap_data_filtered.columns.dtype)
+        # --- End Inspection ---
+
+
+        # Plot the FILTERED data
+        sns.heatmap(weekly_heatmap_data_filtered,
+                    ax=ax,
+                    cmap=cmap,
+                    cbar=False,
+                    linewidths=0.2,
+                    linecolor='darkgrey',
+                    square=False,
+                    xticklabels=False) # <-- Turn off default heatmap labels initially
+
+        ax.set_title(f'Data Presence/Absence Heatmap by Country (Weekly, from {start_date_filter})', fontsize=16, pad=20)
+        ax.set_xlabel('Week Starting Date', fontsize=12)
+        ax.set_ylabel('Country', fontsize=12)
+
+        # --- Explicit Tick and Label Calculation ---
+        date_columns = weekly_heatmap_data_filtered.columns
+        num_weeks_filtered = len(date_columns)
+
+        # Adjust tick interval based on number of weeks
+        if num_weeks_filtered > 52 * 2: # More than 2 years
+             tick_interval_months = 6 # Label every 6 months
+             date_format = '%Y-%m'
+        elif num_weeks_filtered > 52: # More than 1 year
+             tick_interval_months = 3 # Label every 3 months
+             date_format = '%Y-%m'
+        elif num_weeks_filtered > 13: # More than 3 months
+             tick_interval_months = 1 # Label every month
+             date_format = '%Y-%m'
+        else: # Less than 3 months
+             tick_interval_months = 0 # Indicate we should label every week
+             date_format = '%Y-%m-%d'
+
+
+        tick_indices = []
+        tick_labels = []
+
+        if tick_interval_months > 0:
+            # Find the first tick position (start of a relevant month)
+            first_date = date_columns[0]
+            # Start checking from the beginning of the month of the first date column
+            current_tick_date = pd.Timestamp(year=first_date.year, month=first_date.month, day=1)
+
+            last_added_index = -1 # To prevent adding the same index twice close together
+
+            while current_tick_date <= date_columns[-1] + pd.DateOffset(months=tick_interval_months):
+                # Find the *closest* index in our columns to this target date
+                potential_index = date_columns.searchsorted(current_tick_date)
+
+                # Ensure we don't go out of bounds
+                potential_index = min(potential_index, num_weeks_filtered - 1)
+
+                # Check if this index is significantly different from the last one added
+                if potential_index > last_added_index:
+                     actual_date_at_index = date_columns[potential_index]
+                     # Add the tick for the *first* week starting in or after the target month
+                     tick_indices.append(potential_index)
+                     tick_labels.append(actual_date_at_index.strftime(date_format))
+                     last_added_index = potential_index # Update last added index
+
+                # Move to the next target tick date
+                current_tick_date += pd.DateOffset(months=tick_interval_months)
+
+            # Ensure the very first week's label is present if not captured
+            if 0 not in tick_indices and num_weeks_filtered > 0:
+                 tick_indices.insert(0, 0)
+                 tick_labels.insert(0, date_columns[0].strftime(date_format))
+
+        else: # Label every week if the period is very short
+            tick_indices = list(range(num_weeks_filtered))
+            tick_labels = [d.strftime(date_format) for d in date_columns]
+
+
+        # Fallback if still not enough ticks
+        if len(tick_indices) < 2 and num_weeks_filtered > 1: # Need at least 2 ticks for a range
+            print("WARN: Few explicit ticks found, adding start and end ticks.")
+            tick_indices = [0, num_weeks_filtered - 1]
+            tick_labels = [date_columns[0].strftime(date_format), date_columns[-1].strftime(date_format)]
+            # Ensure uniqueness if only one week
+            if num_weeks_filtered == 1:
+                tick_indices = [0]
+                tick_labels = [date_columns[0].strftime(date_format)]
+
+
+        # Apply the calculated ticks and labels
+        if tick_indices: # Check if list is not empty
+             tick_positions = [i + 0.5 for i in tick_indices]
+             ax.set_xticks(tick_positions)
+             ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=9)
+        else:
+             print("WARN: No ticks could be calculated.")
+             ax.set_xticks([]) # Remove ticks if none calculated
+
+        # --- End Explicit Tick Calculation ---
+
+        plt.yticks(fontsize=10)
+
+        # Add grid lines
+        ax.grid(which='major', axis='x', linestyle='-', color='darkgrey', linewidth=0.6)
+        ax.grid(which='major', axis='y', linestyle='-', color='darkgrey', linewidth=0.6)
+
+        # Add a legend manually
+        legend_elements = [
+            plt.Rectangle((0, 0), 1, 1, fc='#f0f0f0', ec='black', label='Data Present (in Week)'),
+            plt.Rectangle((0, 0), 1, 1, fc='#d9534f', ec='black', label='Data Missing (Whole Week)')
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.01, 1), title="Legend")
+
+        plt.tight_layout(rect=[0, 0, 0.9, 1]) # Adjust layout
+        print("Displaying plot...")
+        plt.show()
