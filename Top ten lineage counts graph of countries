@@ -1,0 +1,102 @@
+        # --- Plotting with Legend and In-Plot Country Tags ---
+        print("Generating plots...")
+        plt.style.use('seaborn-v0_8-whitegrid')
+
+        # Ensure we only use countries that actually have data in plot_data
+        final_plot_countries = [c for c in countries_plot_order if c in plot_data['country'].unique()]
+        if not final_plot_countries:
+             print("ERROR: No countries left to plot after filtering.")
+             # Optional: exit() or raise an error here
+        else:
+             num_countries = len(final_plot_countries)
+             plot_height_per_country = 2.0
+             aspect_ratio = 3.5
+
+             # Get unique lineages for consistent coloring and legend
+             unique_lineages_in_plot = sorted(plot_data['lineage'].unique())
+             print(f"Total unique lineages across all plots: {len(unique_lineages_in_plot)}")
+
+             # Choose palette
+             if len(unique_lineages_in_plot) > 20:
+                 print("WARN: More than 20 unique lineages. Colors may repeat.")
+                 palette = sns.color_palette("turbo", n_colors=len(unique_lineages_in_plot)) # turbo is good for many categories
+             elif len(unique_lineages_in_plot) > 10:
+                 palette = sns.color_palette("tab20", n_colors=len(unique_lineages_in_plot))
+             else:
+                 palette = sns.color_palette("tab10", n_colors=len(unique_lineages_in_plot))
+
+
+             # Create the FacetGrid using relplot
+             g = sns.relplot(
+                 data=plot_data,
+                 x='date',
+                 y='count',
+                 hue='lineage',
+                 hue_order=unique_lineages_in_plot, # Ensure consistent color mapping
+                 palette=palette,               # Apply the chosen palette
+                 row='country',
+                 row_order=final_plot_countries, # Use the filtered list
+                 kind='line',
+                 height=plot_height_per_country,
+                 aspect=aspect_ratio,
+                 facet_kws={'sharey': False, 'sharex': True, 'margin_titles': True}, # margin_titles puts titles on right
+                 legend=False, # We will create a legend manually outside
+                 lw=0.8
+             )
+
+             # --- Customization and Formatting ---
+             g.set_axis_labels("Date", "Sequences")
+             # Remove default facet titles if adding tags inside (optional)
+             # g.set_titles("") # Uncomment this to remove the titles FacetGrid adds
+
+             # --- Add Country Tag Inside Each Plot ---
+             for i, country_name in enumerate(final_plot_countries):
+                 # Access the correct Axes object. g.axes is a 2D array (num_rows x 1 column)
+                 ax = g.axes[i, 0]
+                 # Add text in the top-left corner (coordinates relative to axes)
+                 ax.text(0.02, 0.95, country_name,
+                         transform=ax.transAxes, # Use axes coordinates (0 to 1)
+                         fontsize=11,
+                         fontweight='bold',
+                         va='top', # Vertical alignment
+                         ha='left') # Horizontal alignment
+
+             # Format date axis and grid
+             for ax in g.axes.flat:
+                 ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+                 ax.xaxis.set_major_formatter(mdates.DateFormatter('%b\n%Y'))
+                 ax.tick_params(axis='x', labelsize=9)
+                 ax.tick_params(axis='y', labelsize=9)
+                 ax.xaxis.set_minor_locator(mdates.MonthLocator())
+                 ax.grid(which='minor', axis='x', linestyle=':', color='lightgrey', linewidth=0.5)
+                 ax.grid(which='major', axis='both', linestyle='-', color='darkgrey', linewidth=0.6)
+                 current_ylim = ax.get_ylim()
+                 ax.set_ylim(0, current_ylim[1] * 1.05)
+
+
+             sns.despine(fig=g.fig, trim=False)
+             g.fig.suptitle(f'Daily Counts of Top {top_n_lineages} Lineages per Country (from {start_date_filter})', y=1.03, fontsize=16)
+
+             # --- Create and Place Consolidated Legend ---
+             legend_handles = [plt.Line2D([0], [0], color=palette[j], lw=2) for j in range(len(unique_lineages_in_plot))]
+             legend_labels = unique_lineages_in_plot
+
+             num_cols_legend = 1
+             if len(unique_lineages_in_plot) > 15: num_cols_legend = 2
+             if len(unique_lineages_in_plot) > 30: num_cols_legend = 3 # May need further adjustment
+
+             g.fig.legend(handles=legend_handles,
+                          labels=legend_labels,
+                          loc='center left',
+                          bbox_to_anchor=(1.01, 0.5), # Position to the right
+                          ncol=num_cols_legend,
+                          title=f"Top {top_n_lineages} Lineages\n(Overall)",
+                          fontsize=8,
+                          title_fontsize=9)
+
+             # Adjust layout to make room for the legend
+             right_margin = 0.90 if num_cols_legend == 1 else 0.85 if num_cols_legend == 2 else 0.80
+             plt.subplots_adjust(hspace=0.5, right=right_margin) # Increase hspace if needed
+
+             print("Displaying plot...")
+             plt.show()
